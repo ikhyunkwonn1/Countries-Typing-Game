@@ -167,6 +167,10 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputEncoding = THREE.sRGBEncoding;
 
+const DAY_MAP_URL = renderer.capabilities.maxTextureSize >= 8192
+  ? 'assets/earth-day-8k.jpg'
+  : IMG + 'earth-blue-marble.jpg';
+
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 200);
 
@@ -247,6 +251,27 @@ function lineSegmentsFrom(arr, color, opacity) {
   }));
 }
 
+function tubeFromPoints(points, radius, color, opacity, renderOrder) {
+  const clean = points.slice();
+  if (clean.length > 1 && clean[0].distanceToSquared(clean[clean.length - 1]) < 1e-10) clean.pop();
+  if (clean.length < 3) return null;
+  const curve = new THREE.CatmullRomCurve3(clean, true, 'centripetal');
+  const geometry = new THREE.TubeGeometry(curve, clean.length, radius, 5, true);
+  const material = new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide,
+  });
+  const tube = new THREE.Mesh(geometry, material);
+  tube.renderOrder = renderOrder;
+  return tube;
+}
+
+function tubeFromRing(ring, surfaceRadius, radius, color, opacity, renderOrder) {
+  return tubeFromPoints(
+    ring.map(([lon, lat]) => latLonToVec3(lat, lon, surfaceRadius)),
+    radius, color, opacity, renderOrder
+  );
+}
+
 function slerpDir(a, b, t) {
   const omega = Math.acos(THREE.MathUtils.clamp(a.dot(b), -1, 1));
   const so = Math.sin(omega);
@@ -265,6 +290,7 @@ const ui = {
 };
 
 let countries = [];          // {name, polys, center, angR}
+let earthMaterial = null;
 const highlight = new THREE.Group();
 scene.add(highlight);
 
@@ -275,19 +301,17 @@ const loadTex = url => texLoader.loadAsync(url).then(t => {
 });
 
 Promise.all([
-  loadTex(IMG + 'earth-blue-marble.jpg'),
+  loadTex(DAY_MAP_URL),
   loadTex(IMG + 'earth-topology.png'),
   loadTex(IMG + 'earth-water.png'),
   fetch(DATA_URL).then(r => { if (!r.ok) throw new Error('data ' + r.status); return r.json(); }),
 ]).then(([colorMap, bumpMap, waterMap, topo]) => {
   colorMap.encoding = THREE.sRGBEncoding;
-  const earth = new THREE.Mesh(
-    new THREE.SphereGeometry(1, 96, 96),
-    new THREE.MeshPhongMaterial({
-      map: colorMap, bumpMap, bumpScale: 0.012,
-      specularMap: waterMap, specular: new THREE.Color(0x2a2a33), shininess: 14,
-    })
-  );
+  earthMaterial = new THREE.MeshPhongMaterial({
+    map: colorMap, bumpMap, bumpScale: 0.012,
+    specularMap: waterMap, specular: new THREE.Color(0x2a2a33), shininess: 14,
+  });
+  const earth = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 96), earthMaterial);
   scene.add(earth);
 
   // build country records + one faint border layer for every feature
@@ -333,7 +357,7 @@ const view = { dir: latLonToVec3(18, 10, 1), dist: 3.4 };
 let flight = null;
 
 function flyTo(country) {
-  const toDist = 1 + THREE.MathUtils.clamp(country.angR * 3.4, 0.22, 2.3);
+  const toDist = 1 + THREE.MathUtils.clamp(country.angR * 3.4, 0.30, 2.3);
   const ang = view.dir.angleTo(country.center);
   flight = {
     fromDir: view.dir.clone(), toDir: country.center.clone(),
@@ -345,16 +369,21 @@ function flyTo(country) {
 
 // ---------------------------------------------------------------- highlight
 function setHighlight(country) {
-  for (const child of highlight.children) child.geometry.dispose();
+  for (const child of highlight.children) {
+    child.geometry.dispose();
+    child.material.dispose();
+  }
   highlight.clear();
   if (!country) return;
 
-  const arr = [];
-  for (const poly of country.polys) ringToSegments(poly[0], 1.003, arr);
-  highlight.add(lineSegmentsFrom(arr, 0xffd75e, 1));
-  const glowArr = [];
-  for (const poly of country.polys) ringToSegments(poly[0], 1.007, glowArr);
-  highlight.add(lineSegmentsFrom(glowArr, 0xffd75e, 0.35));
+  // WebGL's basic lines are usually locked to one pixel. These two static tube
+  // outlines stay visible at close zoom without the distracting pulse animation.
+  for (const poly of country.polys) {
+    const halo = tubeFromRing(poly[0], 1.007, 0.0018, 0xffd75e, 0.30, 1);
+    const contour = tubeFromRing(poly[0], 1.008, 0.0006, 0xfff3c4, 1, 2);
+    if (halo) highlight.add(halo);
+    if (contour) highlight.add(contour);
+  }
 
   if (country.angR < 0.02) {              // spotlight ring for tiny countries
     const c = country.center, aR = Math.max(country.angR * 3, 0.03);
@@ -367,12 +396,12 @@ function setHighlight(country) {
       pts.push(c.clone().multiplyScalar(Math.cos(aR))
         .addScaledVector(t1, Math.cos(th) * Math.sin(aR))
         .addScaledVector(t2, Math.sin(th) * Math.sin(aR))
-        .multiplyScalar(1.004));
+        .multiplyScalar(1.008));
     }
-    highlight.add(new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints(pts),
-      new THREE.LineBasicMaterial({ color: 0xffd75e, transparent: true, opacity: 0.8, depthWrite: false })
-    ));
+    const halo = tubeFromPoints(pts, 0.0018, 0xffd75e, 0.30, 1);
+    const contour = tubeFromPoints(pts, 0.0006, 0xfff3c4, 1, 2);
+    if (halo) highlight.add(halo);
+    if (contour) highlight.add(contour);
   }
 }
 
@@ -393,6 +422,7 @@ function startGame() {
   }
   total = remaining.length; doneCount = 0;
   phase = 'playing'; startTime = performance.now();
+  earthMaterial.color.setHex(0x9b9b9b);   // dim the map; leave the target outline bright
   ui.menu.classList.add('hidden'); ui.done.classList.add('hidden');
   ui.hud.classList.remove('hidden');
   nextCountry();
@@ -410,6 +440,7 @@ function nextCountry() {
 
 function finish() {
   phase = 'done';
+  earthMaterial.color.setHex(0xffffff);
   target = null; setHighlight(null);
   ui.hud.classList.add('hidden');
   ui.done.classList.remove('hidden');
@@ -482,9 +513,6 @@ function animate(now) {
   camUp.setFromMatrixColumn(camera.matrixWorld, 1);
   sun.position.copy(view.dir).multiplyScalar(4)
      .addScaledVector(camRight, 2.4).addScaledVector(camUp, 1.8);
-
-  const pulse = 0.72 + 0.28 * Math.sin(now * 0.005);
-  for (const child of highlight.children) child.material.opacity = pulse * (child === highlight.children[1] ? 0.4 : 1);
 
   if (phase === 'playing') ui.timer.textContent = fmtTime(now - startTime);
   renderer.render(scene, camera);
