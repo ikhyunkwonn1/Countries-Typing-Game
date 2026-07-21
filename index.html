@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Countries in the World</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: #000; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #eaf1ff;
+  }
+  #globe { position: fixed; inset: 0; display: block; }
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,10,0.55) 100%);
+  }
+  .hidden { display: none !important; }
+
+  /* --- overlays (menu / done) --- */
+  .overlay {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 22px; text-align: center;
+    background: rgba(3, 7, 18, 0.45);
+    backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+  }
+  .overlay h1 {
+    font-size: clamp(38px, 7vw, 64px); font-weight: 800; letter-spacing: 0.03em;
+    text-shadow: 0 4px 30px rgba(80, 150, 255, 0.45);
+  }
+  .overlay p { font-size: 17px; color: #b9c8e8; max-width: 520px; line-height: 1.5; }
+  .overlay .credit { font-size: 12px; color: #66739c; margin-top: 12px; }
+  .overlay button {
+    font: inherit; font-size: 19px; font-weight: 700; letter-spacing: 0.06em;
+    padding: 15px 52px; border: none; border-radius: 999px; cursor: pointer;
+    color: #241c00; background: linear-gradient(180deg, #ffe27a, #f5b93c);
+    box-shadow: 0 6px 30px rgba(245, 185, 60, 0.35);
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .overlay button:hover:enabled { transform: scale(1.05); box-shadow: 0 8px 40px rgba(245, 185, 60, 0.55); }
+  .overlay button:disabled { opacity: 0.45; cursor: default; }
+
+  /* --- HUD --- */
+  .chip {
+    position: fixed; top: 18px; z-index: 5;
+    padding: 9px 16px; border-radius: 999px;
+    font-size: 15px; font-weight: 700; letter-spacing: 0.05em;
+    color: #dfe9ff; background: rgba(10, 18, 38, 0.6);
+    border: 1px solid rgba(120, 160, 255, 0.18);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    font-variant-numeric: tabular-nums;
+  }
+  #progress { left: 18px; }
+  #timer { right: 18px; }
+
+  #prompt {
+    position: fixed; top: 7vh; left: 0; right: 0; z-index: 5;
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+    pointer-events: none;
+  }
+  #countryName {
+    font-size: clamp(28px, 4.6vw, 46px); font-weight: 800; letter-spacing: 0.02em;
+    text-align: center; padding: 0 20px;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.85), 0 0 40px rgba(90, 160, 255, 0.35);
+  }
+  #answer {
+    pointer-events: auto;
+    font: inherit; font-size: 19px; text-align: center;
+    width: min(400px, 84vw); padding: 13px 18px;
+    color: #f2f6ff; background: rgba(8, 15, 32, 0.72);
+    border: 1.5px solid rgba(130, 170, 255, 0.35); border-radius: 14px;
+    outline: none; caret-color: #ffd75e;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  #answer:focus { border-color: rgba(255, 215, 94, 0.75); box-shadow: 0 0 24px rgba(255, 215, 94, 0.18); }
+  #answer.good { border-color: #55e88f; box-shadow: 0 0 30px rgba(85, 232, 143, 0.45); }
+  #answer.bad  { border-color: #ff5d6c; box-shadow: 0 0 30px rgba(255, 93, 108, 0.4); animation: shake 0.32s; }
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-9px); } 40% { transform: translateX(8px); }
+    60% { transform: translateX(-6px); } 80% { transform: translateX(4px); }
+  }
+  #hint { font-size: 13px; color: #8fa0c8; letter-spacing: 0.04em; }
+</style>
+</head>
+<body>
+<canvas id="globe"></canvas>
+<div id="vignette"></div>
+
+<div id="hud" class="hidden">
+  <div id="progress" class="chip">0 / 0</div>
+  <div id="timer" class="chip">0:00</div>
+  <div id="prompt">
+    <div id="countryName"></div>
+    <input id="answer" type="text" autocomplete="off" autocapitalize="off" autocorrect="off"
+           spellcheck="false" placeholder="Type the country's name…">
+    <div id="hint">press Enter ↵</div>
+  </div>
+</div>
+
+<div id="menu" class="overlay">
+  <h1></h1>
+  <p id="menuSub">Loading Earth…</p>
+  <button id="startBtn" disabled>Start</button>
+  <p class="credit">Imagery: NASA Blue Marble &nbsp;·&nbsp; Boundaries: Natural Earth</p>
+</div>
+
+<div id="done" class="overlay hidden">
+  <h1>World Conquered!</h1>
+  <p id="doneStats"></p>
+  <button id="againBtn">Play again</button>
+</div>
+
+<script src="https://unpkg.com/three@0.149.0/build/three.min.js"></script>
+<script src="https://unpkg.com/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script>
+(() => {
+'use strict';
+
+// ---------------------------------------------------------------- game list
+// Natural Earth territories / non-countries excluded from the game
+// (they still get faint borders on the globe).
+const EXCLUDE = new Set([
+  'American Samoa', 'Anguilla', 'Antarctica', 'Aruba', 'Ashmore and Cartier Is.',
+  'Bermuda', 'Br. Indian Ocean Ter.', 'British Virgin Is.', 'Cayman Is.',
+  'Cook Is.', 'Curaçao', 'Faeroe Is.', 'Falkland Is.', 'Fr. Polynesia',
+  'Fr. S. Antarctic Lands', 'Greenland', 'Guam', 'Guernsey',
+  'Heard I. and McDonald Is.', 'Hong Kong', 'Indian Ocean Ter.', 'Isle of Man',
+  'Jersey', 'Macao', 'Montserrat', 'N. Cyprus', 'N. Mariana Is.',
+  'New Caledonia', 'Niue', 'Norfolk Island', 'Pitcairn Is.', 'Puerto Rico',
+  'S. Geo. and the Is.', 'Saint Helena', 'Siachen Glacier', 'Sint Maarten',
+  'Somaliland', 'St-Barthélemy', 'St-Martin', 'St. Pierre and Miquelon',
+  'Turks and Caicos Is.', 'U.S. Virgin Is.', 'W. Sahara', 'Wallis and Futuna Is.',
+  'Åland',
+]);
+// Natural Earth abbreviations → full names
+const RENAME = {
+  'Antigua and Barb.': 'Antigua and Barbuda',
+  'Bosnia and Herz.': 'Bosnia and Herzegovina',
+  'Central African Rep.': 'Central African Republic',
+  'Congo': 'Republic of the Congo',
+  'Dem. Rep. Congo': 'Democratic Republic of the Congo',
+  'Dominican Rep.': 'Dominican Republic',
+  'Eq. Guinea': 'Equatorial Guinea',
+  'Macedonia': 'North Macedonia',
+  'Marshall Is.': 'Marshall Islands',
+  'S. Sudan': 'South Sudan',
+  'Solomon Is.': 'Solomon Islands',
+  'St. Kitts and Nevis': 'Saint Kitts and Nevis',
+  'St. Vin. and Gren.': 'Saint Vincent and the Grenadines',
+  'São Tomé and Principe': 'São Tomé and Príncipe',
+  'United States of America': 'United States',
+  'Vatican': 'Vatican City',
+  'eSwatini': 'Eswatini',
+};
+
+const DATA_URL = 'https://unpkg.com/world-atlas@2.0.2/countries-50m.json';
+const IMG = 'https://unpkg.com/three-globe/example/img/';
+
+// ---------------------------------------------------------------- three.js
+const canvas = document.getElementById('globe');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputEncoding = THREE.sRGBEncoding;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 200);
+
+const sun = new THREE.DirectionalLight(0xfff3e0, 1.25);
+scene.add(sun);
+scene.add(new THREE.AmbientLight(0x8fa4c8, 0.55));
+
+// star field
+{
+  const mkStars = (n, size, spread) => {
+    const pos = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const v = new THREE.Vector3().randomDirection().multiplyScalar(45 + Math.random() * spread);
+      pos.set([v.x, v.y, v.z], i * 3);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    return new THREE.Points(g, new THREE.PointsMaterial({
+      color: 0xcdd9ff, size, sizeAttenuation: true,
+      transparent: true, opacity: 0.85, depthWrite: false,
+    }));
+  };
+  scene.add(mkStars(3500, 0.09, 30));
+  scene.add(mkStars(250, 0.22, 30));
+}
+
+// atmosphere: inner rim light + outer halo
+const fresnelMat = (color, frag, side, blendScale) => new THREE.ShaderMaterial({
+  uniforms: { c: { value: new THREE.Color(color) } },
+  vertexShader: `
+    varying vec3 vN;
+    void main() {
+      vN = normalize(normalMatrix * normal);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: `
+    uniform vec3 c; varying vec3 vN;
+    void main() { ${frag} gl_FragColor = vec4(c * f * ${blendScale}, 1.0); }`,
+  blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, side,
+});
+{
+  const rim = new THREE.Mesh(
+    new THREE.SphereGeometry(1.001, 64, 64),
+    fresnelMat(0x7fb8ff, 'float f = pow(1.0 - max(dot(vN, vec3(0.,0.,1.)), 0.0), 4.5);', THREE.FrontSide, '0.55')
+  );
+  const halo = new THREE.Mesh(
+    new THREE.SphereGeometry(1.16, 64, 64),
+    fresnelMat(0x4f9fe8, 'float f = pow(max(-dot(vN, vec3(0.,0.,1.)), 0.0), 1.6);', THREE.BackSide, '1.3')
+  );
+  scene.add(rim, halo);
+}
+
+// ---------------------------------------------------------------- geo utils
+function latLonToVec3(lat, lon, r) {
+  const phi = (90 - lat) * Math.PI / 180;   // polar angle from +y
+  const theta = (lon + 180) * Math.PI / 180;
+  return new THREE.Vector3(
+    -r * Math.sin(phi) * Math.cos(theta),
+     r * Math.cos(phi),
+     r * Math.sin(phi) * Math.sin(theta)
+  );
+}
+
+function ringToSegments(ring, r, out) {
+  let px, py, pz, has = false;
+  for (const [lon, lat] of ring) {
+    const v = latLonToVec3(lat, lon, r);
+    if (has) out.push(px, py, pz, v.x, v.y, v.z);
+    px = v.x; py = v.y; pz = v.z; has = true;
+  }
+}
+
+function lineSegmentsFrom(arr, color, opacity) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({
+    color, transparent: true, opacity, depthWrite: false,
+  }));
+}
+
+function slerpDir(a, b, t) {
+  const omega = Math.acos(THREE.MathUtils.clamp(a.dot(b), -1, 1));
+  const so = Math.sin(omega);
+  if (so < 1e-6) return a.clone();
+  return a.clone().multiplyScalar(Math.sin((1 - t) * omega) / so)
+          .addScaledVector(b, Math.sin(t * omega) / so).normalize();
+}
+
+// ---------------------------------------------------------------- load
+const $ = id => document.getElementById(id);
+const ui = {
+  hud: $('hud'), menu: $('menu'), done: $('done'), menuSub: $('menuSub'),
+  startBtn: $('startBtn'), againBtn: $('againBtn'), doneStats: $('doneStats'),
+  countryName: $('countryName'), answer: $('answer'),
+  progress: $('progress'), timer: $('timer'),
+};
+
+let countries = [];          // {name, polys, center, angR}
+const highlight = new THREE.Group();
+scene.add(highlight);
+
+const texLoader = new THREE.TextureLoader();
+const loadTex = url => texLoader.loadAsync(url).then(t => {
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return t;
+});
+
+Promise.all([
+  loadTex(IMG + 'earth-blue-marble.jpg'),
+  loadTex(IMG + 'earth-topology.png'),
+  loadTex(IMG + 'earth-water.png'),
+  fetch(DATA_URL).then(r => { if (!r.ok) throw new Error('data ' + r.status); return r.json(); }),
+]).then(([colorMap, bumpMap, waterMap, topo]) => {
+  colorMap.encoding = THREE.sRGBEncoding;
+  const earth = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 96, 96),
+    new THREE.MeshPhongMaterial({
+      map: colorMap, bumpMap, bumpScale: 0.012,
+      specularMap: waterMap, specular: new THREE.Color(0x2a2a33), shininess: 14,
+    })
+  );
+  scene.add(earth);
+
+  // build country records + one faint border layer for every feature
+  const features = topojson.feature(topo, topo.objects.countries).features;
+  const borderArr = [];
+  for (const f of features) {
+    if (!f.geometry) continue;
+    const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates]
+                : f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates : [];
+    for (const poly of polys) for (const ring of poly) ringToSegments(ring, 1.0012, borderArr);
+
+    const raw = f.properties.name;
+    if (EXCLUDE.has(raw)) continue;
+
+    // frame on the largest outer ring; include nearby rings, ignore far overseas bits
+    const outers = polys.map(p => p[0]);
+    const largest = outers.reduce((a, b) => (b.length > a.length ? b : a), outers[0]);
+    const center = new THREE.Vector3();
+    for (const [lon, lat] of largest) center.add(latLonToVec3(lat, lon, 1));
+    center.normalize();
+    let angR = 0.003;
+    for (const ring of outers) {
+      const isMain = ring === largest;
+      for (const [lon, lat] of ring) {
+        const a = center.angleTo(latLonToVec3(lat, lon, 1));
+        if (isMain || a < 0.5) angR = Math.max(angR, a);
+      }
+    }
+    countries.push({ name: RENAME[raw] || raw, polys, center, angR });
+  }
+  scene.add(lineSegmentsFrom(borderArr, 0x5c7ea8, 0.3));
+  console.log(`Country Typer: ${countries.length} countries in play`);
+
+  ui.menuSub.textContent = `${countries.length} countries. One globe. Type each name to claim it.`;
+  ui.startBtn.disabled = false;
+}).catch(err => {
+  console.error(err);
+  ui.menuSub.textContent = '⚠ Could not load Earth data — check your internet connection and reload.';
+});
+
+// ---------------------------------------------------------------- camera
+const view = { dir: latLonToVec3(18, 10, 1), dist: 3.4 };
+let flight = null;
+
+function flyTo(country) {
+  const toDist = 1 + THREE.MathUtils.clamp(country.angR * 3.4, 0.22, 2.3);
+  const ang = view.dir.angleTo(country.center);
+  flight = {
+    fromDir: view.dir.clone(), toDir: country.center.clone(),
+    fromDist: view.dist, toDist,
+    t0: performance.now(), dur: (0.85 + ang * 0.55) * 1000,
+    bump: Math.min(0.55, ang * 0.5),
+  };
+}
+
+// ---------------------------------------------------------------- highlight
+function setHighlight(country) {
+  for (const child of highlight.children) child.geometry.dispose();
+  highlight.clear();
+  if (!country) return;
+
+  const arr = [];
+  for (const poly of country.polys) ringToSegments(poly[0], 1.003, arr);
+  highlight.add(lineSegmentsFrom(arr, 0xffd75e, 1));
+  const glowArr = [];
+  for (const poly of country.polys) ringToSegments(poly[0], 1.007, glowArr);
+  highlight.add(lineSegmentsFrom(glowArr, 0xffd75e, 0.35));
+
+  if (country.angR < 0.02) {              // spotlight ring for tiny countries
+    const c = country.center, aR = Math.max(country.angR * 3, 0.03);
+    let t1 = new THREE.Vector3(0, 1, 0).cross(c);
+    if (t1.lengthSq() < 1e-6) t1.set(1, 0, 0); else t1.normalize();
+    const t2 = c.clone().cross(t1).normalize();
+    const pts = [];
+    for (let i = 0; i <= 96; i++) {
+      const th = (i / 96) * Math.PI * 2;
+      pts.push(c.clone().multiplyScalar(Math.cos(aR))
+        .addScaledVector(t1, Math.cos(th) * Math.sin(aR))
+        .addScaledVector(t2, Math.sin(th) * Math.sin(aR))
+        .multiplyScalar(1.004));
+    }
+    highlight.add(new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineBasicMaterial({ color: 0xffd75e, transparent: true, opacity: 0.8, depthWrite: false })
+    ));
+  }
+}
+
+// ---------------------------------------------------------------- game
+const norm = s => s.toLowerCase()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .replace(/['’‘`´]/g, '').replace(/[-–—]/g, ' ').replace(/[.,]/g, '')
+  .replace(/\s+/g, ' ').trim().replace(/^the /, '');
+
+let phase = 'menu';          // menu | playing | done
+let remaining = [], target = null, doneCount = 0, total = 0, startTime = 0;
+
+function startGame() {
+  remaining = countries.slice();
+  for (let i = remaining.length - 1; i > 0; i--) {   // shuffle
+    const j = Math.floor(Math.random() * (i + 1));
+    [remaining[i], remaining[j]] = [remaining[j], remaining[i]];
+  }
+  total = remaining.length; doneCount = 0;
+  phase = 'playing'; startTime = performance.now();
+  ui.menu.classList.add('hidden'); ui.done.classList.add('hidden');
+  ui.hud.classList.remove('hidden');
+  nextCountry();
+}
+
+function nextCountry() {
+  target = remaining.pop();
+  ui.progress.textContent = `${doneCount} / ${total}`;
+  ui.countryName.textContent = target.name;
+  ui.answer.value = '';
+  ui.answer.focus();
+  setHighlight(target);
+  flyTo(target);
+}
+
+function finish() {
+  phase = 'done';
+  target = null; setHighlight(null);
+  ui.hud.classList.add('hidden');
+  ui.done.classList.remove('hidden');
+  ui.doneStats.textContent =
+    `You typed all ${total} countries in ${fmtTime(performance.now() - startTime)}.`;
+  view.dist = 3.4;                          // drift back out for the end screen
+  flight = { fromDir: view.dir.clone(), toDir: view.dir.clone(),
+             fromDist: view.dist, toDist: 3.4, t0: performance.now(), dur: 1500, bump: 0 };
+}
+
+function submit() {
+  if (phase !== 'playing' || !target) return;
+  if (norm(ui.answer.value) === norm(target.name)) {
+    doneCount++;
+    flashInput('good');
+    if (remaining.length === 0) { ui.progress.textContent = `${doneCount} / ${total}`; finish(); }
+    else nextCountry();
+  } else {
+    flashInput('bad');
+  }
+}
+
+let flashTimer = null;
+function flashInput(cls) {
+  ui.answer.classList.remove('good', 'bad');
+  void ui.answer.offsetWidth;               // restart CSS animation
+  ui.answer.classList.add(cls);
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => ui.answer.classList.remove('good', 'bad'), 380);
+}
+
+const fmtTime = ms => {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+
+ui.startBtn.addEventListener('click', startGame);
+ui.againBtn.addEventListener('click', startGame);
+ui.answer.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+ui.answer.addEventListener('blur', () => {
+  if (phase === 'playing') setTimeout(() => ui.answer.focus(), 0);
+});
+
+// ---------------------------------------------------------------- loop
+const easeInOutCubic = t => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const yAxis = new THREE.Vector3(0, 1, 0);
+const camRight = new THREE.Vector3(), camUp = new THREE.Vector3();
+let last = performance.now();
+
+function animate(now) {
+  requestAnimationFrame(animate);
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+
+  if (phase === 'menu' || phase === 'done') view.dir.applyAxisAngle(yAxis, dt * 0.045);
+
+  if (flight) {
+    const t = Math.min((now - flight.t0) / flight.dur, 1);
+    const e = easeInOutCubic(t);
+    view.dir.copy(slerpDir(flight.fromDir, flight.toDir, e));
+    view.dist = THREE.MathUtils.lerp(flight.fromDist, flight.toDist, e)
+              + flight.bump * Math.sin(Math.PI * e);
+    if (t >= 1) flight = null;
+  }
+
+  camera.position.copy(view.dir).multiplyScalar(view.dist);
+  camera.lookAt(0, 0, 0);
+  camera.updateMatrixWorld();
+  camRight.setFromMatrixColumn(camera.matrixWorld, 0);
+  camUp.setFromMatrixColumn(camera.matrixWorld, 1);
+  sun.position.copy(view.dir).multiplyScalar(4)
+     .addScaledVector(camRight, 2.4).addScaledVector(camUp, 1.8);
+
+  const pulse = 0.72 + 0.28 * Math.sin(now * 0.005);
+  for (const child of highlight.children) child.material.opacity = pulse * (child === highlight.children[1] ? 0.4 : 1);
+
+  if (phase === 'playing') ui.timer.textContent = fmtTime(now - startTime);
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(animate);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+})();
+</script>
+</body>
+</html>
