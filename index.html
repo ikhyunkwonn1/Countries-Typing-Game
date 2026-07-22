@@ -381,6 +381,16 @@ const ui = {
 let countries = [];          // {name, polys, center, angR, arcIds}
 let plannedRoute = [];       // country indexes; a no-repeat, adjacent-first route
 let earthMaterial = null;
+
+// Deliberately curated from how the highlight reads in play, rather than from
+// a single geometry threshold. These countries need a visible fallback marker.
+const SPOTLIGHT_COUNTRIES = new Set([
+  'Andorra', 'Antigua and Barbuda', 'Bahrain', 'Barbados', 'Dominica',
+  'Grenada', 'Liechtenstein', 'Maldives', 'Malta', 'Mauritius', 'Monaco',
+  'Nauru', 'Saint Kitts and Nevis', 'Saint Lucia',
+  'Saint Vincent and the Grenadines', 'San Marino', 'Seychelles',
+  'Singapore', 'Vatican City',
+]);
 const highlight = new THREE.Group();
 scene.add(highlight);
 
@@ -485,7 +495,7 @@ function setHighlight(country) {
     if (contour) highlight.add(contour);
   }
 
-  if (country.angR < 0.02) {              // spotlight ring for tiny countries
+  if (SPOTLIGHT_COUNTRIES.has(country.name)) {
     const c = country.center, aR = Math.max(country.angR * 3, 0.03);
     let t1 = new THREE.Vector3(0, 1, 0).cross(c);
     if (t1.lengthSq() < 1e-6) t1.set(1, 0, 0); else t1.normalize();
