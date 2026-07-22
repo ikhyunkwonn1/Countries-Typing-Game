@@ -23,7 +23,7 @@
     position: fixed; inset: 0; z-index: 10;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 22px; text-align: center;
-    background: rgba(3, 7, 18, 0.45);
+    background: rgba(3, 7, 18, 0.18);
     backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
   }
   .overlay h1 {
@@ -35,12 +35,34 @@
   .overlay button {
     font: inherit; font-size: 19px; font-weight: 700; letter-spacing: 0.06em;
     padding: 15px 52px; border: none; border-radius: 999px; cursor: pointer;
-    color: #241c00; background: linear-gradient(180deg, #ffe27a, #f5b93c);
-    box-shadow: 0 6px 30px rgba(245, 185, 60, 0.35);
+    color: #eef4ff; background: linear-gradient(180deg, #465f99, #27385f);
+    box-shadow: 0 6px 30px rgba(46, 72, 130, 0.42);
     transition: transform 0.15s, box-shadow 0.15s;
   }
-  .overlay button:hover:enabled { transform: scale(1.05); box-shadow: 0 8px 40px rgba(245, 185, 60, 0.55); }
+  .overlay button:hover:enabled { transform: scale(1.05); box-shadow: 0 8px 40px rgba(72, 111, 190, 0.55); }
   .overlay button:disabled { opacity: 0.45; cursor: default; }
+  .mode-switch {
+    display: flex; align-items: center; gap: 12px; cursor: pointer;
+    color: #b9c8e8; font-size: 15px; font-weight: 700; letter-spacing: 0.04em;
+  }
+  .mode-switch input {
+    position: absolute; inline-size: 1px; block-size: 1px; opacity: 0;
+  }
+  .switch-track {
+    position: relative; inline-size: 48px; block-size: 27px; border-radius: 999px;
+    background: rgba(80, 104, 150, 0.65); border: 1px solid rgba(150, 180, 255, 0.3);
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .switch-track::after {
+    content: ''; position: absolute; inset: 3px auto 3px 3px; inline-size: 19px;
+    border-radius: 50%; background: #eaf1ff; transition: transform 0.2s;
+  }
+  .mode-switch input:checked + .switch-track {
+    background: #3f5790; border-color: #7c9fe7;
+  }
+  .mode-switch input:checked + .switch-track::after { transform: translateX(21px); }
+  .mode-switch input:focus-visible + .switch-track { outline: 2px solid #9db9ff; outline-offset: 3px; }
+  .mode-switch:has(input:disabled) { opacity: 0.45; cursor: default; }
 
   /* --- HUD --- */
   .chip {
@@ -104,8 +126,13 @@
 <div id="menu" class="overlay">
   <h1></h1>
   <p id="menuSub">Loading Earth…</p>
+  <label class="mode-switch" for="infiniteMode">
+    <span>Infinite mode</span>
+    <input id="infiniteMode" type="checkbox" disabled>
+    <span class="switch-track" aria-hidden="true"></span>
+  </label>
   <button id="startBtn" disabled>Start</button>
-  <p class="credit">Imagery: NASA Blue Marble &nbsp;·&nbsp; Boundaries: Natural Earth</p>
+  <p class="credit">Imagery: NASA Blue Marble + Black Marble &nbsp;·&nbsp; Boundaries: Natural Earth</p>
 </div>
 
 <div id="done" class="overlay hidden">
@@ -170,13 +197,13 @@ renderer.outputEncoding = THREE.sRGBEncoding;
 const DAY_MAP_URL = renderer.capabilities.maxTextureSize >= 8192
   ? 'assets/earth-day-8k.jpg'
   : IMG + 'earth-blue-marble.jpg';
+const NIGHT_MAP_URL = 'assets/earth-night.jpg';
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 200);
 
-const sun = new THREE.DirectionalLight(0xfff3e0, 1.25);
-scene.add(sun);
-scene.add(new THREE.AmbientLight(0x8fa4c8, 0.55));
+// Earth illumination is calculated per pixel from the real solar position.
+// Do not add ambient scene light: it would brighten the night hemisphere.
 
 // star field
 {
@@ -198,19 +225,29 @@ scene.add(new THREE.AmbientLight(0x8fa4c8, 0.55));
 }
 
 // atmosphere: inner rim light + outer halo
-const fresnelMat = (color, frag, side, blendScale) => new THREE.ShaderMaterial({
-  uniforms: { c: { value: new THREE.Color(color) } },
+const atmosphereMaterials = [];
+const fresnelMat = (color, frag, side, blendScale) => {
+  const material = new THREE.ShaderMaterial({
+  uniforms: { c: { value: new THREE.Color(color) }, sunDirection: { value: new THREE.Vector3(1, 0, 0) } },
   vertexShader: `
-    varying vec3 vN;
+    varying vec3 vN; varying vec3 vObjectN;
     void main() {
       vN = normalize(normalMatrix * normal);
+      vObjectN = normalize(normal);
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     }`,
   fragmentShader: `
-    uniform vec3 c; varying vec3 vN;
-    void main() { ${frag} gl_FragColor = vec4(c * f * ${blendScale}, 1.0); }`,
+    uniform vec3 c; uniform vec3 sunDirection; varying vec3 vN; varying vec3 vObjectN;
+    void main() {
+      ${frag}
+      float daylight = 0.24 + 0.76 * max(dot(normalize(vObjectN), normalize(sunDirection)), 0.0);
+      gl_FragColor = vec4(c * f * daylight * ${blendScale}, 1.0);
+    }`,
   blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, side,
-});
+  });
+  atmosphereMaterials.push(material);
+  return material;
+};
 {
   const rim = new THREE.Mesh(
     new THREE.SphereGeometry(1.001, 64, 64),
@@ -232,6 +269,123 @@ function latLonToVec3(lat, lon, r) {
      r * Math.cos(phi),
      r * Math.sin(phi) * Math.sin(theta)
   );
+}
+
+// NOAA's solar-position approximation, expressed in the globe's longitude
+// coordinate system. It accounts for both Earth's axial tilt and the equation
+// of time, so the terminator follows the actual UTC date and time.
+function solarDirectionAt(date) {
+  const yearStart = Date.UTC(date.getUTCFullYear(), 0, 1);
+  const day = Math.floor((date.getTime() - yearStart) / 86400000) + 1;
+  const minutes = date.getUTCHours() * 60 + date.getUTCMinutes()
+    + date.getUTCSeconds() / 60 + date.getUTCMilliseconds() / 60000;
+  const gamma = 2 * Math.PI / 365 * (day - 1 + (minutes - 720) / 1440);
+  const equationOfTime = 229.18 * (0.000075 + 0.001868 * Math.cos(gamma)
+    - 0.032077 * Math.sin(gamma) - 0.014615 * Math.cos(2 * gamma)
+    - 0.040849 * Math.sin(2 * gamma));
+  const declination = 0.006918 - 0.399912 * Math.cos(gamma)
+    + 0.070257 * Math.sin(gamma) - 0.006758 * Math.cos(2 * gamma)
+    + 0.000907 * Math.sin(2 * gamma) - 0.002697 * Math.cos(3 * gamma)
+    + 0.00148 * Math.sin(3 * gamma);
+  const subsolarLongitude = (720 - minutes - equationOfTime) / 4;
+  return latLonToVec3(THREE.MathUtils.radToDeg(declination), subsolarLongitude, 1).normalize();
+}
+
+function createEarthMaterial(dayMap, nightMap, waterMap) {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      dayMap: { value: dayMap }, nightMap: { value: nightMap }, waterMap: { value: waterMap },
+      sunDirection: { value: solarDirectionAt(new Date()) }, gameDim: { value: 1 },
+      // Kept as uniforms so the night look can be art-directed without
+      // touching the solar model or adding a post-processing pass.
+      cityLightIntensity: { value: 1.85 },
+      cityLightThreshold: { value: 0.025 },
+      cityLightSoftness: { value: 0.085 },
+      cityLightDuskFade: { value: 0.07 },
+    },
+    vertexShader: `
+      varying vec2 vUv; varying vec3 vNormal; varying vec3 vWorldPosition;
+      void main() {
+        vUv = uv; vNormal = normalize(normal);
+        vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform sampler2D dayMap; uniform sampler2D nightMap; uniform sampler2D waterMap;
+      uniform vec3 sunDirection; uniform float gameDim;
+      uniform float cityLightIntensity; uniform float cityLightThreshold;
+      uniform float cityLightSoftness; uniform float cityLightDuskFade;
+      varying vec2 vUv; varying vec3 vNormal; varying vec3 vWorldPosition;
+      float nightLightAt(vec2 uv) {
+        vec3 sampleColor = pow(texture2D(nightMap, uv).rgb, vec3(2.2));
+        return max(max(sampleColor.r, sampleColor.g), sampleColor.b);
+      }
+      void main() {
+        vec3 n = normalize(vNormal);
+        vec3 l = normalize(sunDirection);
+        vec3 v = normalize(cameraPosition - vWorldPosition);
+        float nl = dot(n, l);
+        float sunlit = smoothstep(-0.04, 0.16, nl);
+        // ShaderMaterial does not receive the built-in texture color-space
+        // decode chunks, so convert the sRGB JPEG samples to linear light.
+        vec3 day = pow(texture2D(dayMap, vUv).rgb, vec3(2.2));
+        vec3 nightTexture = pow(texture2D(nightMap, vUv).rgb, vec3(2.2));
+        // Keep the actual Earth surface readable after sunset. City lights
+        // are deliberately separated below, instead of brightening the whole
+        // Black Marble map and making deserts or coastlines glow.
+        vec3 nightSurface = day * 0.065 + vec3(0.002, 0.006, 0.014);
+        vec3 daySurface = day * (0.14 + 0.86 * max(nl, 0.0));
+        vec3 color = mix(nightSurface, daySurface, sunlit);
+
+        // Black Marble is a measured night-light image. A soft high-pass mask
+        // extracts the dense urban signal, while a small local average gives
+        // it a restrained atmospheric halo without a global bloom filter.
+        float citySignal = max(max(nightTexture.r, nightTexture.g), nightTexture.b);
+        float cityCore = smoothstep(cityLightThreshold,
+          cityLightThreshold + cityLightSoftness, citySignal);
+        vec2 texel = vec2(1.0 / 4096.0, 1.0 / 2048.0);
+        float cityNear = 0.0;
+        cityNear += nightLightAt(vUv + vec2(texel.x * 2.0, 0.0));
+        cityNear += nightLightAt(vUv - vec2(texel.x * 2.0, 0.0));
+        cityNear += nightLightAt(vUv + vec2(0.0, texel.y * 2.0));
+        cityNear += nightLightAt(vUv - vec2(0.0, texel.y * 2.0));
+        float cityHalo = smoothstep(cityLightThreshold * 0.65,
+          cityLightThreshold + cityLightSoftness, cityNear * 0.25);
+        float nightAmount = 1.0 - smoothstep(-0.18, cityLightDuskFade, nl);
+        float viewFacing = smoothstep(0.035, 0.32, dot(n, v));
+        vec3 cityColor = mix(vec3(0.30, 0.48, 1.0), vec3(1.0, 0.48, 0.10), cityCore);
+        color += cityColor * cityCore * cityLightIntensity * nightAmount * viewFacing;
+        color += vec3(0.16, 0.28, 0.62) * cityHalo * 0.20 * nightAmount * viewFacing;
+        float water = texture2D(waterMap, vUv).r;
+        vec3 reflected = reflect(-l, n);
+        float glint = pow(max(dot(reflected, v), 0.0), 72.0) * water * sunlit;
+        color += vec3(0.50, 0.62, 0.72) * glint * 0.38;
+        gl_FragColor = vec4(pow(color * gameDim, vec3(1.0 / 2.2)), 1.0);
+      }`,
+  });
+}
+
+function createCloudMaterial(cloudMap) {
+  return new THREE.ShaderMaterial({
+    uniforms: { cloudMap: { value: cloudMap }, sunDirection: { value: solarDirectionAt(new Date()) } },
+    vertexShader: `
+      varying vec2 vUv; varying vec3 vNormalW;
+      void main() {
+        vUv = uv;
+        vNormalW = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform sampler2D cloudMap; uniform vec3 sunDirection;
+      varying vec2 vUv; varying vec3 vNormalW;
+      void main() {
+        vec4 cloud = texture2D(cloudMap, vUv);
+        float sunlight = smoothstep(-0.12, 0.18, dot(normalize(vNormalW), normalize(sunDirection)));
+        float shade = 0.28 + 0.72 * max(dot(normalize(vNormalW), normalize(sunDirection)), 0.0);
+        gl_FragColor = vec4(vec3(shade), cloud.a * sunlight * 0.62);
+      }`,
+    transparent: true, depthWrite: false,
+  });
 }
 
 function ringToSegments(ring, r, out) {
@@ -298,8 +452,7 @@ function planAdjacentRoute(nodes) {
     }
   }
 
-  // Stable pseudo-randomness gives each restart a different candidate while
-  // keeping the resulting route identical on every playthrough.
+  // Stable pseudo-randomness keeps the resulting route identical on every playthrough.
   let seed = 0x6d2b79f5;
   const random = () => {
     seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
@@ -368,19 +521,93 @@ function planAdjacentRoute(nodes) {
   return best.route;
 }
 
+function planClosedAdjacentRoute(nodes) {
+  const edge = (a, b) => nodes[a].neighbors.has(b);
+  const jumpDistance = (a, b) => nodes[a].center.angleTo(nodes[b].center);
+  const edgeCost = (a, b) => edge(a, b) ? 0 : 1 + jumpDistance(a, b) * 0.001;
+  const score = route => route.reduce((total, country, index) =>
+    total + edgeCost(country, route[(index + 1) % route.length]), 0);
+
+  let seed = 0x34f91c2b;
+  const random = () => {
+    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = (t + Math.imul(t ^ t >>> 7, 61 | t)) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+
+  const buildCandidate = () => {
+    const unvisited = new Set(nodes.map((_, index) => index));
+    const route = [];
+    let current = Math.floor(random() * nodes.length);
+    while (unvisited.size) {
+      route.push(current);
+      unvisited.delete(current);
+      if (!unvisited.size) break;
+
+      const adjacent = [...nodes[current].neighbors].filter(index => unvisited.has(index));
+      if (adjacent.length) {
+        adjacent.sort((a, b) => {
+          const aOptions = [...nodes[a].neighbors].filter(index => unvisited.has(index)).length;
+          const bOptions = [...nodes[b].neighbors].filter(index => unvisited.has(index)).length;
+          return aOptions - bOptions || random() - 0.5;
+        });
+        current = adjacent[0];
+      } else {
+        const nearby = [...unvisited].sort((a, b) => jumpDistance(current, a) - jumpDistance(current, b));
+        current = nearby[Math.floor(random() * Math.min(4, nearby.length))];
+      }
+    }
+    return route;
+  };
+
+  const improve = route => {
+    let changed = true;
+    for (let pass = 0; changed && pass < 8; pass++) {
+      changed = false;
+      // 2-opt on a cycle: the second edge may be the route's closing edge.
+      for (let i = 0; i < route.length - 2; i++) {
+        for (let j = i + 2; j < route.length; j++) {
+          if (i === 0 && j === route.length - 1) continue;
+          const a = route[i], b = route[i + 1];
+          const c = route[j], d = route[(j + 1) % route.length];
+          const before = edgeCost(a, b) + edgeCost(c, d);
+          const after = edgeCost(a, c) + edgeCost(b, d);
+          if (after + 1e-9 < before) {
+            const middle = route.slice(i + 1, j + 1).reverse();
+            route.splice(i + 1, middle.length, ...middle);
+            changed = true;
+          }
+        }
+      }
+    }
+    return { route, score: score(route) };
+  };
+
+  let best = null;
+  for (let attempt = 0; attempt < 96; attempt++) {
+    const candidate = improve(buildCandidate());
+    if (!best || candidate.score < best.score) best = candidate;
+  }
+  return best.route;
+}
+
 
 // ---------------------------------------------------------------- load
 const $ = id => document.getElementById(id);
 const ui = {
   hud: $('hud'), menu: $('menu'), done: $('done'), menuSub: $('menuSub'),
   startBtn: $('startBtn'), againBtn: $('againBtn'), doneStats: $('doneStats'),
+  infiniteMode: $('infiniteMode'),
   countryName: $('countryName'), answer: $('answer'),
   progress: $('progress'), timer: $('timer'),
 };
 
 let countries = [];          // {name, polys, center, angR, arcIds}
 let plannedRoute = [];       // country indexes; a no-repeat, adjacent-first route
+let plannedEndlessRoute = []; // country indexes; a no-repeat, adjacent-first cycle
 let earthMaterial = null;
+let cloudMaterial = null, cloudLayer = null;
 
 // Deliberately curated from how the highlight reads in play, rather than from
 // a single geometry threshold. These countries need a visible fallback marker.
@@ -402,17 +629,17 @@ const loadTex = url => texLoader.loadAsync(url).then(t => {
 
 Promise.all([
   loadTex(DAY_MAP_URL),
-  loadTex(IMG + 'earth-topology.png'),
+  loadTex(NIGHT_MAP_URL),
+  loadTex('assets/earth-clouds.png'),
   loadTex(IMG + 'earth-water.png'),
   fetch(DATA_URL).then(r => { if (!r.ok) throw new Error('data ' + r.status); return r.json(); }),
-]).then(([colorMap, bumpMap, waterMap, topo]) => {
-  colorMap.encoding = THREE.sRGBEncoding;
-  earthMaterial = new THREE.MeshPhongMaterial({
-    map: colorMap, bumpMap, bumpScale: 0.012,
-    specularMap: waterMap, specular: new THREE.Color(0x2a2a33), shininess: 14,
-  });
+]).then(([colorMap, nightMap, cloudMap, waterMap, topo]) => {
+  earthMaterial = createEarthMaterial(colorMap, nightMap, waterMap);
   const earth = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 96), earthMaterial);
   scene.add(earth);
+  cloudMaterial = createCloudMaterial(cloudMap);
+  cloudLayer = new THREE.Mesh(new THREE.SphereGeometry(1.008, 96, 96), cloudMaterial);
+  scene.add(cloudLayer);
 
   // build country records + one faint border layer for every feature
   const features = topojson.feature(topo, topo.objects.countries).features;
@@ -452,10 +679,12 @@ Promise.all([
     countries.push({ name: RENAME[raw] || raw, polys, center, angR, arcIds });
   }
   plannedRoute = planAdjacentRoute(countries);
+  plannedEndlessRoute = planClosedAdjacentRoute(countries);
   scene.add(lineSegmentsFrom(borderArr, 0x5c7ea8, 0.3));
   console.log(`Country Typer: ${countries.length} countries in play`);
 
   ui.menuSub.textContent = `${countries.length} countries. One globe. Type each name to claim it.`;
+  ui.infiniteMode.disabled = false;
   ui.startBtn.disabled = false;
 }).catch(err => {
   console.error(err);
@@ -522,14 +751,33 @@ const norm = s => s.toLowerCase()
   .replace(/\s+/g, ' ').trim().replace(/^the /, '');
 
 let phase = 'menu';          // menu | playing | done
+let gameMode = 'finite';     // finite | endless
 let remaining = [], target = null, doneCount = 0, total = 0, startTime = 0;
+let endlessStartIndex = 0;
+
+function setGameMode(mode) {
+  gameMode = mode;
+  ui.infiniteMode.checked = mode === 'endless';
+}
+
+function refillRoute() {
+  const route = gameMode === 'endless' ? plannedEndlessRoute : plannedRoute;
+  const orderedRoute = gameMode === 'endless'
+    ? route.slice(endlessStartIndex).concat(route.slice(0, endlessStartIndex))
+    : route;
+  // nextCountry() pops, so reverse the planned order for each lap.
+  remaining = orderedRoute.slice().reverse().map(index => countries[index]);
+}
 
 function startGame() {
-  // nextCountry() pops, so reverse the preplanned order once per game.
-  remaining = plannedRoute.slice().reverse().map(index => countries[index]);
+  if (gameMode === 'endless') {
+    // Rotating a closed route preserves every adjacency and jump transition.
+    endlessStartIndex = Math.floor(Math.random() * plannedEndlessRoute.length);
+  }
+  refillRoute();
   total = remaining.length; doneCount = 0;
   phase = 'playing'; startTime = performance.now();
-  earthMaterial.color.setHex(0x9b9b9b);   // dim the map; leave the target outline bright
+  earthMaterial.uniforms.gameDim.value = 1;
   ui.menu.classList.add('hidden'); ui.done.classList.add('hidden');
   ui.hud.classList.remove('hidden');
   nextCountry();
@@ -537,7 +785,8 @@ function startGame() {
 
 function nextCountry() {
   target = remaining.pop();
-  ui.progress.textContent = `${doneCount} / ${total}`;
+  const displayedCount = gameMode === 'endless' ? doneCount + 1 : doneCount;
+  ui.progress.textContent = `${displayedCount} / ${total}`;
   ui.countryName.textContent = target.name;
   ui.answer.value = '';
   ui.answer.focus();
@@ -547,7 +796,7 @@ function nextCountry() {
 
 function finish() {
   phase = 'done';
-  earthMaterial.color.setHex(0xffffff);
+  earthMaterial.uniforms.gameDim.value = 1;
   target = null; setHighlight(null);
   ui.hud.classList.add('hidden');
   ui.done.classList.remove('hidden');
@@ -563,8 +812,11 @@ function submit() {
   if (norm(ui.answer.value) === norm(target.name)) {
     doneCount++;
     flashInput('good');
-    if (remaining.length === 0) { ui.progress.textContent = `${doneCount} / ${total}`; finish(); }
-    else nextCountry();
+    if (remaining.length === 0) {
+      if (gameMode === 'endless') refillRoute();
+      else { ui.progress.textContent = `${doneCount} / ${total}`; finish(); return; }
+    }
+    nextCountry();
   } else {
     flashInput('bad');
   }
@@ -584,6 +836,7 @@ const fmtTime = ms => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
 
+ui.infiniteMode.addEventListener('change', () => setGameMode(ui.infiniteMode.checked ? 'endless' : 'finite'));
 ui.startBtn.addEventListener('click', startGame);
 ui.againBtn.addEventListener('click', startGame);
 ui.answer.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
@@ -594,7 +847,6 @@ ui.answer.addEventListener('blur', () => {
 // ---------------------------------------------------------------- loop
 const easeInOutCubic = t => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const yAxis = new THREE.Vector3(0, 1, 0);
-const camRight = new THREE.Vector3(), camUp = new THREE.Vector3();
 let last = performance.now();
 
 function animate(now) {
@@ -616,10 +868,11 @@ function animate(now) {
   camera.position.copy(view.dir).multiplyScalar(view.dist);
   camera.lookAt(0, 0, 0);
   camera.updateMatrixWorld();
-  camRight.setFromMatrixColumn(camera.matrixWorld, 0);
-  camUp.setFromMatrixColumn(camera.matrixWorld, 1);
-  sun.position.copy(view.dir).multiplyScalar(4)
-     .addScaledVector(camRight, 2.4).addScaledVector(camUp, 1.8);
+  const sunDirection = solarDirectionAt(new Date());
+  if (earthMaterial) earthMaterial.uniforms.sunDirection.value.copy(sunDirection);
+  if (cloudMaterial) cloudMaterial.uniforms.sunDirection.value.copy(sunDirection);
+  if (cloudLayer) cloudLayer.rotation.y += dt * 0.0025;
+  for (const material of atmosphereMaterials) material.uniforms.sunDirection.value.copy(sunDirection);
 
   if (phase === 'playing') ui.timer.textContent = fmtTime(now - startTime);
   renderer.render(scene, camera);
