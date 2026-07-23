@@ -41,28 +41,72 @@
   }
   .overlay button:hover:enabled { transform: scale(1.05); box-shadow: 0 8px 40px rgba(72, 111, 190, 0.55); }
   .overlay button:disabled { opacity: 0.45; cursor: default; }
-  .mode-switch {
-    display: flex; align-items: center; gap: 12px; cursor: pointer;
-    color: #b9c8e8; font-size: 15px; font-weight: 700; letter-spacing: 0.04em;
+  /* --- settings card (start menu) --- */
+  .settings {
+    display: flex; flex-direction: column;
+    width: min(340px, 86vw); padding: 6px 22px;
+    background: rgba(12, 20, 42, 0.5);
+    border: 1px solid rgba(130, 165, 255, 0.16); border-radius: 18px;
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 14px 44px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   }
+  .mode-switch {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 15px 0; cursor: pointer;
+    color: #cdd9f5; font-size: 15.5px; font-weight: 600; letter-spacing: 0.02em;
+  }
+  .mode-switch + .mode-switch { border-top: 1px solid rgba(130, 165, 255, 0.1); }
   .mode-switch input {
     position: absolute; inline-size: 1px; block-size: 1px; opacity: 0;
   }
   .switch-track {
-    position: relative; inline-size: 48px; block-size: 27px; border-radius: 999px;
-    background: rgba(80, 104, 150, 0.65); border: 1px solid rgba(150, 180, 255, 0.3);
-    transition: background 0.2s, border-color 0.2s;
+    position: relative; flex: none; inline-size: 48px; block-size: 28px; border-radius: 999px;
+    background: rgba(70, 92, 138, 0.55); border: 1px solid rgba(150, 180, 255, 0.22);
+    transition: background 0.22s, border-color 0.22s, box-shadow 0.22s;
   }
   .switch-track::after {
-    content: ''; position: absolute; inset: 3px auto 3px 3px; inline-size: 19px;
-    border-radius: 50%; background: #eaf1ff; transition: transform 0.2s;
+    content: ''; position: absolute; inset: 3px auto 3px 3px; inline-size: 22px;
+    border-radius: 50%; background: #f4f8ff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    transition: transform 0.22s cubic-bezier(0.34, 1.4, 0.5, 1);
   }
   .mode-switch input:checked + .switch-track {
-    background: #3f5790; border-color: #7c9fe7;
+    background: linear-gradient(180deg, #5b7fd6, #3f5aa8); border-color: rgba(140, 175, 255, 0.7);
+    box-shadow: 0 0 16px rgba(80, 130, 240, 0.4);
   }
-  .mode-switch input:checked + .switch-track::after { transform: translateX(21px); }
+  .mode-switch input:checked + .switch-track::after { transform: translateX(20px); }
   .mode-switch input:focus-visible + .switch-track { outline: 2px solid #9db9ff; outline-offset: 3px; }
-  .mode-switch:has(input:disabled) { opacity: 0.45; cursor: default; }
+  .mode-switch:has(input:disabled) { opacity: 0.4; cursor: default; }
+
+  /* Cut from the same glass + atmosphere as the globe: a luminous pill that
+     breathes with the blue halo and warms toward the country-claim gold on hover. */
+  #startBtn {
+    position: relative; overflow: hidden;
+    width: min(340px, 86vw); padding: 17px 0;
+    font-size: 17px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase;
+    color: #eef5ff;
+    background: linear-gradient(180deg, rgba(86, 128, 210, 0.5), rgba(34, 54, 104, 0.42));
+    border: 1px solid rgba(150, 186, 255, 0.5); border-radius: 999px;
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    text-shadow: 0 0 20px rgba(140, 185, 255, 0.55);
+    animation: startBreathe 3.8s ease-in-out infinite;
+    transition: transform 0.18s, border-color 0.25s, filter 0.25s;
+  }
+  #startBtn:hover:enabled {
+    transform: scale(1.025); border-color: rgba(255, 219, 138, 0.62);
+    filter: brightness(1.06); animation: none;
+    box-shadow:
+      0 16px 52px rgba(70, 110, 210, 0.42), 0 0 34px rgba(255, 205, 110, 0.3),
+      inset 0 1px 0 rgba(255, 255, 255, 0.34), inset 0 -10px 26px rgba(9, 18, 46, 0.5);
+  }
+  #startBtn:disabled { animation: none; }
+  @keyframes startBreathe {
+    0%, 100% { box-shadow:
+      0 12px 40px rgba(48, 92, 190, 0.3),
+      inset 0 1px 0 rgba(255, 255, 255, 0.28), inset 0 -10px 26px rgba(9, 18, 46, 0.5); }
+    50% { box-shadow:
+      0 14px 54px rgba(96, 150, 255, 0.5),
+      inset 0 1px 0 rgba(255, 255, 255, 0.34), inset 0 -10px 26px rgba(9, 18, 46, 0.5); }
+  }
 
   /* --- HUD --- */
   .chip {
@@ -126,21 +170,23 @@
 <div id="menu" class="overlay">
   <h1></h1>
   <p id="menuSub">Loading Earth…</p>
-  <label class="mode-switch" for="infiniteMode">
-    <span>Infinite mode</span>
-    <input id="infiniteMode" type="checkbox" disabled>
-    <span class="switch-track" aria-hidden="true"></span>
-  </label>
-  <label class="mode-switch" for="cloudsMode">
-    <span>Clouds</span>
-    <input id="cloudsMode" type="checkbox" disabled>
-    <span class="switch-track" aria-hidden="true"></span>
-  </label>
-  <label class="mode-switch" for="nightMode">
-    <span>Night mode</span>
-    <input id="nightMode" type="checkbox" disabled>
-    <span class="switch-track" aria-hidden="true"></span>
-  </label>
+  <div class="settings">
+    <label class="mode-switch" for="infiniteMode">
+      <span>Infinite mode</span>
+      <input id="infiniteMode" type="checkbox" disabled>
+      <span class="switch-track" aria-hidden="true"></span>
+    </label>
+    <label class="mode-switch" for="cloudsMode">
+      <span>Clouds</span>
+      <input id="cloudsMode" type="checkbox" disabled>
+      <span class="switch-track" aria-hidden="true"></span>
+    </label>
+    <label class="mode-switch" for="nightMode">
+      <span>Night mode</span>
+      <input id="nightMode" type="checkbox" disabled>
+      <span class="switch-track" aria-hidden="true"></span>
+    </label>
+  </div>
   <button id="startBtn" disabled>Start</button>
   <p class="credit">Imagery: NASA Blue Marble + Black Marble &nbsp;·&nbsp; Boundaries: Natural Earth</p>
 </div>
