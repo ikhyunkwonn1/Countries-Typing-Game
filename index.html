@@ -131,6 +131,16 @@
     <input id="infiniteMode" type="checkbox" disabled>
     <span class="switch-track" aria-hidden="true"></span>
   </label>
+  <label class="mode-switch" for="cloudsMode">
+    <span>Clouds</span>
+    <input id="cloudsMode" type="checkbox" disabled>
+    <span class="switch-track" aria-hidden="true"></span>
+  </label>
+  <label class="mode-switch" for="nightMode">
+    <span>Night mode</span>
+    <input id="nightMode" type="checkbox" disabled>
+    <span class="switch-track" aria-hidden="true"></span>
+  </label>
   <button id="startBtn" disabled>Start</button>
   <p class="credit">Imagery: NASA Blue Marble + Black Marble &nbsp;·&nbsp; Boundaries: Natural Earth</p>
 </div>
@@ -197,7 +207,7 @@ renderer.outputEncoding = THREE.sRGBEncoding;
 const DAY_MAP_URL = renderer.capabilities.maxTextureSize >= 8192
   ? 'assets/earth-day-8k.jpg'
   : IMG + 'earth-blue-marble.jpg';
-const NIGHT_MAP_URL = 'assets/earth-night.jpg';
+const NIGHT_MAP_URL = 'assets/earth-night-smooth.jpg';
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 200);
@@ -296,11 +306,13 @@ function createEarthMaterial(dayMap, nightMap, waterMap) {
     uniforms: {
       dayMap: { value: dayMap }, nightMap: { value: nightMap }, waterMap: { value: waterMap },
       sunDirection: { value: solarDirectionAt(new Date()) }, gameDim: { value: 1 },
+      nightModeEnabled: { value: 0 },
       // Kept as uniforms so the night look can be art-directed without
       // touching the solar model or adding a post-processing pass.
       cityLightIntensity: { value: 1.85 },
-      cityLightThreshold: { value: 0.025 },
-      cityLightSoftness: { value: 0.085 },
+      cityLightThreshold: { value: 0.04 },
+      cityLightSoftness: { value: 0.05 },
+      cityLightGamma: { value: 0.9 },
       cityLightDuskFade: { value: 0.07 },
     },
     vertexShader: `
@@ -312,20 +324,18 @@ function createEarthMaterial(dayMap, nightMap, waterMap) {
       }`,
     fragmentShader: `
       uniform sampler2D dayMap; uniform sampler2D nightMap; uniform sampler2D waterMap;
-      uniform vec3 sunDirection; uniform float gameDim;
+      uniform vec3 sunDirection; uniform float gameDim; uniform float nightModeEnabled;
       uniform float cityLightIntensity; uniform float cityLightThreshold;
-      uniform float cityLightSoftness; uniform float cityLightDuskFade;
+      uniform float cityLightSoftness; uniform float cityLightGamma; uniform float cityLightDuskFade;
       varying vec2 vUv; varying vec3 vNormal; varying vec3 vWorldPosition;
-      float nightLightAt(vec2 uv) {
-        vec3 sampleColor = pow(texture2D(nightMap, uv).rgb, vec3(2.2));
-        return max(max(sampleColor.r, sampleColor.g), sampleColor.b);
-      }
       void main() {
         vec3 n = normalize(vNormal);
         vec3 l = normalize(sunDirection);
         vec3 v = normalize(cameraPosition - vWorldPosition);
         float nl = dot(n, l);
-        float sunlit = smoothstep(-0.04, 0.16, nl);
+        // With night mode off, the whole earth stays fully lit (the look
+        // before day/night was added), and city lights are switched off below.
+        float sunlit = mix(1.0, smoothstep(-0.04, 0.16, nl), nightModeEnabled);
         // ShaderMaterial does not receive the built-in texture color-space
         // decode chunks, so convert the sRGB JPEG samples to linear light.
         vec3 day = pow(texture2D(dayMap, vUv).rgb, vec3(2.2));
@@ -334,28 +344,23 @@ function createEarthMaterial(dayMap, nightMap, waterMap) {
         // are deliberately separated below, instead of brightening the whole
         // Black Marble map and making deserts or coastlines glow.
         vec3 nightSurface = day * 0.065 + vec3(0.002, 0.006, 0.014);
-        vec3 daySurface = day * (0.14 + 0.86 * max(nl, 0.0));
+        // With night mode off, shading is forced fully lit on every point,
+        // not just blended toward the day side, so the whole globe reads
+        // evenly bright instead of still dimming on the far side from the sun.
+        float nlForShading = mix(1.0, max(nl, 0.0), nightModeEnabled);
+        vec3 daySurface = day * (0.14 + 0.86 * nlForShading);
         vec3 color = mix(nightSurface, daySurface, sunlit);
 
-        // Black Marble is a measured night-light image. A soft high-pass mask
-        // extracts the dense urban signal, while a small local average gives
-        // it a restrained atmospheric halo without a global bloom filter.
+        // Black Marble is a measured night-light image. A continuous ramp
+        // (rather than a near-binary cutoff) keeps light clusters graded
+        // instead of stamped into flat, hard-edged blocks at close zoom.
         float citySignal = max(max(nightTexture.r, nightTexture.g), nightTexture.b);
-        float cityCore = smoothstep(cityLightThreshold,
-          cityLightThreshold + cityLightSoftness, citySignal);
-        vec2 texel = vec2(1.0 / 4096.0, 1.0 / 2048.0);
-        float cityNear = 0.0;
-        cityNear += nightLightAt(vUv + vec2(texel.x * 2.0, 0.0));
-        cityNear += nightLightAt(vUv - vec2(texel.x * 2.0, 0.0));
-        cityNear += nightLightAt(vUv + vec2(0.0, texel.y * 2.0));
-        cityNear += nightLightAt(vUv - vec2(0.0, texel.y * 2.0));
-        float cityHalo = smoothstep(cityLightThreshold * 0.65,
-          cityLightThreshold + cityLightSoftness, cityNear * 0.25);
+        float cityNorm = clamp((citySignal - cityLightThreshold) / cityLightSoftness, 0.0, 1.0);
+        float cityCore = pow(cityNorm, cityLightGamma);
         float nightAmount = 1.0 - smoothstep(-0.18, cityLightDuskFade, nl);
         float viewFacing = smoothstep(0.035, 0.32, dot(n, v));
         vec3 cityColor = mix(vec3(0.30, 0.48, 1.0), vec3(1.0, 0.48, 0.10), cityCore);
-        color += cityColor * cityCore * cityLightIntensity * nightAmount * viewFacing;
-        color += vec3(0.16, 0.28, 0.62) * cityHalo * 0.20 * nightAmount * viewFacing;
+        color += cityColor * cityCore * cityLightIntensity * nightAmount * viewFacing * nightModeEnabled;
         float water = texture2D(waterMap, vUv).r;
         vec3 reflected = reflect(-l, n);
         float glint = pow(max(dot(reflected, v), 0.0), 72.0) * water * sunlit;
@@ -598,7 +603,7 @@ const $ = id => document.getElementById(id);
 const ui = {
   hud: $('hud'), menu: $('menu'), done: $('done'), menuSub: $('menuSub'),
   startBtn: $('startBtn'), againBtn: $('againBtn'), doneStats: $('doneStats'),
-  infiniteMode: $('infiniteMode'),
+  infiniteMode: $('infiniteMode'), cloudsMode: $('cloudsMode'), nightMode: $('nightMode'),
   countryName: $('countryName'), answer: $('answer'),
   progress: $('progress'), timer: $('timer'),
 };
@@ -639,6 +644,7 @@ Promise.all([
   scene.add(earth);
   cloudMaterial = createCloudMaterial(cloudMap);
   cloudLayer = new THREE.Mesh(new THREE.SphereGeometry(1.008, 96, 96), cloudMaterial);
+  cloudLayer.visible = ui.cloudsMode.checked;
   scene.add(cloudLayer);
 
   // build country records + one faint border layer for every feature
@@ -685,6 +691,8 @@ Promise.all([
 
   ui.menuSub.textContent = `${countries.length} countries. One globe. Type each name to claim it.`;
   ui.infiniteMode.disabled = false;
+  ui.cloudsMode.disabled = false;
+  ui.nightMode.disabled = false;
   ui.startBtn.disabled = false;
 }).catch(err => {
   console.error(err);
@@ -837,6 +845,12 @@ const fmtTime = ms => {
 };
 
 ui.infiniteMode.addEventListener('change', () => setGameMode(ui.infiniteMode.checked ? 'endless' : 'finite'));
+ui.cloudsMode.addEventListener('change', () => {
+  if (cloudLayer) cloudLayer.visible = ui.cloudsMode.checked;
+});
+ui.nightMode.addEventListener('change', () => {
+  if (earthMaterial) earthMaterial.uniforms.nightModeEnabled.value = ui.nightMode.checked ? 1 : 0;
+});
 ui.startBtn.addEventListener('click', startGame);
 ui.againBtn.addEventListener('click', startGame);
 ui.answer.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
